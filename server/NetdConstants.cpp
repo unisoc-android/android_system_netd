@@ -35,6 +35,9 @@
 #include "NetdConstants.h"
 #include "IptablesRestoreController.h"
 
+#define MAX_CMD_LENGTH (150)
+#define LINE_LENGTH (300)
+
 int execIptablesRestoreWithOutput(IptablesTarget target, const std::string& commands,
                                   std::string *output) {
     return android::net::gCtls->iptablesRestoreCtrl.execute(target, commands, output);
@@ -49,6 +52,40 @@ int execIptablesRestoreCommand(IptablesTarget target, const std::string& table,
     std::string fullCmd = android::base::StringPrintf("*%s\n%s\nCOMMIT\n", table.c_str(),
                                                       command.c_str());
     return execIptablesRestoreWithOutput(target, fullCmd, output);
+}
+
+void execOemCmds(const std::string& command) {
+    FILE *fp;
+    char lineBuf[LINE_LENGTH] = {0};
+    char strCmd[MAX_CMD_LENGTH] = {0};
+    int len;
+
+    strcpy(strCmd, command.c_str());
+    if (0 == strlen(strCmd)) {
+        ALOGD("execOemCmds: cmd string is empty! ");
+        return;
+    }
+    ALOGD("execOemCmds: excute cmd %s", strCmd);
+
+    fp = popen(strCmd, "r");
+    if (fp == NULL) {
+        ALOGD("execOemCmds: popen failed for %s",strCmd);
+        return;
+    }
+
+    while(fgets(lineBuf,LINE_LENGTH,fp) != NULL) {
+        ALOGD("execOemCmds: the failed cmd is %s",strCmd);
+        len = strlen(lineBuf);
+        //delete \n
+        if (len >0) {
+            lineBuf[len-1] = '\0';
+        }
+        ALOGE("execOemCmds: detailed fail reason is %s", lineBuf);
+    }
+
+    pclose(fp);
+
+    return;
 }
 
 /*

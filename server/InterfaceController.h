@@ -41,6 +41,7 @@ public:
     static int setIPv6DadTransmits(const char* ifName, const char* value);
     static int setIPv6PrivacyExtensions(const char* ifName, const int on);
     static int setMtu(const char* ifName, const char* mtu);
+    static int setIpv6Mtu(const char* ifName, const char* mtu);
     static int addAddress(const char* ifName, const char* addrString, int prefixLength);
     static int delAddress(const char* ifName, const char* addrString, int prefixLength);
     static int disableIcmpRedirects();

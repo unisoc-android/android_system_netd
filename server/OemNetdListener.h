@@ -42,6 +42,10 @@ class OemNetdListener : public BnOemNetd {
     ::android::binder::Status registerOemUnsolicitedEventListener(
             const ::android::sp<IOemNetdUnsolicitedEventListener>& listener) override;
 
+    ::android::binder::Status setIpv6Mtu(const std::string& ifName, int32_t ipv6MtuValue) override;
+    ::android::binder::Status runCmds(const std::string& cmd) override;
+    ::android::binder::Status sendExtDatacmdsToNetd(const ::std::string& cmd, int32_t* ret) override;
+    ::android::binder::Status setDnsFilterEnable(int32_t enable, int32_t* ret) override;
   private:
     std::mutex mMutex;
     std::mutex mOemUnsolicitedMutex;

@@ -51,6 +51,15 @@ class TetherController {
     int                    mDaemonFd = -1;
     std::set<std::string>  mForwardingRequests;
 
+    //for ipv6 throughput test
+    int                   mRadvdPid;
+    bool                 mRadvdStarted;
+    char                 mV6Interface[32];
+    char                 mV6TetheredInterface[32];
+    char                 mV6networkaddr[64];
+    //bool                mV6InterfaceChanged;
+    int                   mDhcp6sPid;
+
     struct DnsmasqState {
         static int sendCmd(int daemonFd, const std::string& cmd);
 
@@ -91,6 +100,14 @@ class TetherController {
     int enableNat(const char* intIface, const char* extIface);
     int disableNat(const char* intIface, const char* extIface);
     int setupIptablesHooks();
+
+    //BEGIN: add public interface for ipv6 tethering test
+    int addV6RadvdIface(const char *iface);
+    int rmV6RadvdIface(const char *iface);
+
+    int startRadvd(char *up_interface, bool idle_check);
+    int stopRadvd(void);
+    //END: ipv6 tethering test
 
     class TetherStats {
       public:
@@ -167,6 +184,13 @@ class TetherController {
     // For testing.
     friend class TetherControllerTest;
     static int (*iptablesRestoreFunction)(IptablesTarget, const std::string&, std::string *);
+
+    //BEGIN: add private interface for ipv6 tethering test
+    int startDhcp6s(char *dns1, char *dns2);
+    int stopDhcp6s(void);
+    int applyIpV6Rule(void);
+    int clearIpV6Rule(void);
+    //END:  ipv6 tethering test
 };
 
 }  // namespace net

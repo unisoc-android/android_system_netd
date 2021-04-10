@@ -31,4 +31,24 @@ interface IOemNetd {
     * @param listener oem unsolicited event listener to register
     */
     void registerOemUnsolicitedEventListener(IOemNetdUnsolicitedEventListener listener);
+
+   /**
+    * set mtu for ipv6
+    */
+    void setIpv6Mtu(in @utf8InCpp String ifName, int mtu);
+
+    /**
+    * Run Iptables or ip cmds etc.
+    */
+    void runCmds(in @utf8InCpp String cmd);
+
+    /**
+    * send extData cmd to netd
+    */
+    int sendExtDatacmdsToNetd(in @utf8InCpp String cmd);
+
+    /**
+     * set dns filter
+     */
+    int setDnsFilterEnable(int enable);
 }

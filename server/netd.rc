@@ -1,3 +1,9 @@
+on post-fs-data
+    mkdir /data/misc/dhcp 0770 dhcp dhcp
+    chown dhcp system /data/misc/dhcp
+    mkdir /data/misc/dhcp6c 0770 dhcp dhcp
+    chown dhcp system /data/misc/dhcp6c
+
 service netd /system/bin/netd
     class main
     socket dnsproxyd stream 0660 root inet

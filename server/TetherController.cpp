@@ -51,6 +51,8 @@
 #include "Permission.h"
 #include "TetherController.h"
 
+#include <logwrap/logwrap.h>
+
 namespace android {
 namespace net {
 
@@ -169,6 +171,13 @@ TetherController::TetherController() {
     } else {
         setIpFwdEnabled();
     }
+
+    mV6Interface[0] = '\0';
+    mRadvdStarted = false;
+    mRadvdPid = 0;
+    mV6networkaddr[0] = '\0';
+    mV6TetheredInterface[0] = '\0';
+
 }
 
 bool TetherController::setIpFwdEnabled() {
@@ -905,6 +914,684 @@ StatusOr<TetherController::TetherStatsList> TetherController::getTetherStats() {
 
     return statsList;
 }
+
+//Begin: ipv6 tethering test
+//Add radvd module for ipv6 forward testing
+static const char RADVD_CONF_FILE[]    = "/data/misc/wifi/radvd.conf";
+#define RADVD_PID_FILE "/data/misc/wifi/radvd.pid"
+#define USB_INTERFACE "usb0"
+#define SOFTAP_INTERFACE "wlan0"
+
+const char * const IP_PATH = "/system/bin/ip";
+const char * const IPTABLES_PATH = "/system/bin/iptables";
+
+//add for ipv6 USB tethering
+static int get_v6network_addr_of_interface(char *interface, char *network_addr, bool need_match) {
+    char rawaddrstr[INET6_ADDRSTRLEN], addrstr[INET6_ADDRSTRLEN];
+    unsigned int prefixlen;
+    int i, j;
+    char ifname[64];  // Currently, IFNAMSIZ = 16.
+    FILE *f = fopen("/proc/net/if_inet6", "r");
+    if (!f) {
+        return -errno;
+    }
+
+    // Format:
+    // 20010db8000a0001fc446aa4b5b347ed 03 40 00 01    wlan0
+    while (fscanf(f, "%32s %*02x %02x %*02x %*02x %63s\n",
+                  rawaddrstr, &prefixlen, ifname) == 3) {
+        // Is this the interface we're looking for?
+        if (need_match && strcmp(interface, ifname)) {
+            continue;
+        }
+
+        if (strcmp(ifname, "usb0") == 0 ||strcmp(ifname, "lo") == 0 ||
+            strcmp(ifname, "wlan0") == 0) {
+            continue;
+        }
+
+        // Put the colons back into the address.
+        for (i = 0, j = 0; i < 32; i++, j++) {
+            addrstr[j] = rawaddrstr[i];
+            if (i % 4 == 3) {
+                addrstr[++j] = ':';
+            }
+        }
+        addrstr[j - 1] = '\0';
+
+        // Don't delete the link-local address as well, or it will disable IPv6
+        // on the interface.
+        if (strncmp(addrstr, "fe80:", 5) == 0) {
+            continue;
+        }
+
+        int addrlen = strlen(addrstr);
+        for(i=0, j=0; i<addrlen; i++) {
+            if(addrstr[i] != ':')	j += 4;
+            if(j<=(int)prefixlen)
+                network_addr[i] = addrstr[i];
+
+            if(j>=(int)prefixlen) break;
+        }
+
+        ALOGE("111address %s/%d on %s", addrstr, prefixlen, network_addr);
+
+        addrlen = strlen(network_addr);
+        for(i=addrlen; i>=0; i--) {
+            if(network_addr[i] == ':') {
+                if ((i+2 < INET6_ADDRSTRLEN) && strncmp(network_addr+i+1, "0000", 4) == 0) {
+                    network_addr[i+1] = ':';
+                    network_addr[i+2] = '\0';
+                    continue;
+                }
+                else {
+                    break;
+                }
+            }
+        }
+
+        addrlen = strlen(network_addr);
+        //to deal with 2001:0e80:c210:000e:0002:0000:01c5:5822/64
+        if(network_addr[addrlen -1] != ':') // last char is not ':'
+            snprintf(network_addr+addrlen, 7, "::/%d", prefixlen);
+        else
+            snprintf(network_addr+addrlen, 5, "/%d", prefixlen);
+
+        ALOGE("address %s/%d on %s of %s", addrstr, prefixlen, network_addr, ifname);
+
+        if(!need_match) strcpy(interface, ifname);
+        fclose(f);
+        return 0;
+
+    }
+
+    fclose(f);
+
+    return -1;
+}
+
+static int get_v6_addr_of_interface(const char *interface, char *v6_addr) {
+    char rawaddrstr[INET6_ADDRSTRLEN], addrstr[INET6_ADDRSTRLEN];
+    unsigned int prefixlen;
+    int i, j;
+    char ifname[64];  // Currently, IFNAMSIZ = 16.
+    FILE *f = fopen("/proc/net/if_inet6", "r");
+    if (!f) {
+        return -errno;
+    }
+
+    // Format:
+    // 20010db8000a0001fc446aa4b5b347ed 03 40 00 01    wlan0
+    while (fscanf(f, "%32s %*02x %02x %*02x %*02x %63s\n",
+                  rawaddrstr, &prefixlen, ifname) == 3) {
+        // Is this the interface we're looking for?
+        if (strcmp(interface, ifname)) {
+            continue;
+        }
+
+        // Put the colons back into the address.
+        for (i = 0, j = 0; i < 32; i++, j++) {
+            addrstr[j] = rawaddrstr[i];
+            if (i % 4 == 3) {
+                addrstr[++j] = ':';
+            }
+        }
+        addrstr[j - 1] = '\0';
+
+        // Don't delete the link-local address as well, or it will disable IPv6
+        // on the interface.
+        if (strncmp(addrstr, "fe80:", 5) == 0) {
+            continue;
+        }
+
+        int addrlen = strlen(addrstr);
+
+        snprintf(addrstr+addrlen, 5, "/%d", prefixlen);
+
+        ALOGE("v6 address of  %s is %s", interface, addrstr);
+        strcpy(v6_addr, addrstr);
+
+        fclose(f);
+        return 0;
+
+    }
+
+    fclose(f);
+
+    return -1;
+}
+
+static int runCmd(int argc, const char **argv) {
+    int ret = 0;
+
+    ret = android_fork_execvp(argc, (char **)argv, NULL, false, false);
+
+    std::string full_cmd = argv[0];
+    argc--; argv++;
+    /*
+     * HACK: Sometimes runCmd() is called with a ridcously large value (32)
+     * and it works because the argv[] contains a NULL after the last
+     * true argv. So here we use the NULL argv[] to terminate when the argc
+     * is horribly wrong, and argc for the normal cases.
+     */
+    for (; argc && argv[0]; argc--, argv++) {
+        full_cmd += " ";
+        full_cmd += argv[0];
+    }
+    ALOGD("runCmd(%s) res=%d", full_cmd.c_str(), ret);
+
+    return ret;
+}
+
+int TetherController::startRadvd(char *up_interface, bool idle_check){
+    int fd;
+    char *wbuf = NULL;
+    int ret = 0;
+    bool usb_tethered = false, wifi_tethered = false;
+
+    char networkaddr[64];
+
+    ALOGD("startRadvd");
+
+    if(!up_interface) {
+        ALOGE("NULL interface");
+        return -1;
+    }
+
+    if (mRadvdStarted) {
+        ALOGE("Radvd is already running");
+
+        //check if the ipv6 address of up_interface is changed.
+        memset(networkaddr, 0, sizeof(networkaddr));
+        ret = get_v6network_addr_of_interface(up_interface, networkaddr, true);
+        if(!ret && strcmp(networkaddr, mV6networkaddr) == 0) {
+            ALOGE("radvd for interface %s has been already configed, just return\n", up_interface);
+            return 0;
+        }
+
+        ALOGE("interface %s has not ipv6 addr or its network addr is changed, stop radvd first\n", up_interface);
+        stopRadvd();
+    }
+
+    for (auto it = mInterfaces.cbegin(); it != mInterfaces.cend(); ++it) {
+        if (!strcmp(USB_INTERFACE, it->c_str())){
+            ALOGD("startRadvd has usb tethering");
+            usb_tethered = true;
+        }
+
+        if(!strcmp(SOFTAP_INTERFACE, it->c_str())) {
+            ALOGD("startRadvd has wifi tethering");
+            wifi_tethered = true;
+        }
+
+    }
+
+    if(!usb_tethered && !wifi_tethered) {
+        ALOGE("startRadvd usb/wifi tethering is not opend just return\n");
+        return -1;
+    }
+
+    if(usb_tethered && wifi_tethered) {
+        ALOGE("startRadvd  cannot support usb/wifi ipv6 tethering at the same time, just for usb in this situation\n");
+        wifi_tethered = false;
+    }
+
+    memset(networkaddr, 0, sizeof(networkaddr));
+    ret = get_v6network_addr_of_interface(up_interface, networkaddr, !idle_check);
+    if(ret < 0) {
+        ALOGE("interface %s has not ipv6 addr\n", up_interface);
+        return -1;
+    }
+
+    if(strcmp(networkaddr, mV6networkaddr) == 0) {
+        ALOGE("radvd for interface %s has been already configed\n", up_interface);
+        return -1;
+    }
+
+    memset(mV6networkaddr, 0, sizeof(mV6networkaddr));
+    strcpy(mV6networkaddr, networkaddr);
+
+    memset(networkaddr, 0, sizeof(networkaddr));
+    ret = get_v6_addr_of_interface(up_interface, networkaddr);//including prefix
+    if(ret < 0) {
+        ALOGE("interface %s has not ipv6 addr\n", up_interface);
+        return -1;
+    }
+
+    //Get dns
+    char dns1[PROPERTY_VALUE_MAX] = {'\0'};
+    char dns2[PROPERTY_VALUE_MAX] = {'\0'};
+    char default_dns[64] = {'\0'};;
+
+    char prop1[32];
+    memset(prop1, 0, sizeof(prop1));
+
+    snprintf(prop1, 32, "net.%s.ipv6_dns1", up_interface);
+
+    strcpy(default_dns, networkaddr);
+
+    int i = strlen(default_dns);
+    for(; i>0; i--) {
+        if(default_dns[i] == '/') {
+            default_dns[i] = '\0';
+            break;
+        }
+    }
+
+    property_get(prop1, dns1, default_dns);
+    ALOGD("get dns1 :%s from %s", dns1, prop1);
+
+    char prop2[32];
+    memset(prop2, 0, sizeof(prop2));
+
+    snprintf(prop2, 32, "net.%s.ipv6_dns2", up_interface);
+
+    property_get(prop2, dns2, default_dns);
+    ALOGD("get dns :%s from %s", dns2, prop2);
+
+    if(usb_tethered) {
+        asprintf(&wbuf, "interface %s\n{\n\tAdvSendAdvert on;\n"
+                "\tMinRtrAdvInterval 3;\n\tMaxRtrAdvInterval 10;\n"
+                "\tAdvManagedFlag off;\n\tAdvOtherConfigFlag on;\n"
+                "\tprefix %s\n"
+                "\t{\n\t\tAdvOnLink off;\n\t\tAdvAutonomous on;\n\t\tAdvValidLifetime 240;\n"
+                "\t\tAdvPreferredLifetime 120;\n\t\tAdvRouterAddr off;\n"
+                "\t};\n\tRDNSS %s %s\n"
+                "\t{\n"
+                "\t\tAdvRDNSSLifetime 8000;\n"
+                "\t};"
+                "\n};\n",
+                "usb0", networkaddr, dns1, dns2);
+
+        strcpy(mV6TetheredInterface, "usb0");
+
+    }
+
+    if(wifi_tethered) {
+        asprintf(&wbuf, "interface %s\n{\n\tAdvSendAdvert on;\n"
+                "\tMinRtrAdvInterval 3;\n\tMaxRtrAdvInterval 10;\n"
+                "\tAdvManagedFlag off;\n\tAdvOtherConfigFlag on;\n"
+                "\tprefix %s\n"
+                "\t{\n\t\tAdvOnLink off;\n\t\tAdvAutonomous on;\n\t\tAdvValidLifetime 240;\n"
+                "\t\tAdvPreferredLifetime 120;\n\t\tAdvRouterAddr off;\n"
+                "\t};\n\tRDNSS %s %s\n"
+                "\t{\n"
+                "\t\tAdvRDNSSLifetime 8000;\n"
+                "\t};"
+                "\n};\n",
+                "wlan0", networkaddr, dns1, dns2);
+
+        strcpy(mV6TetheredInterface, "wlan0");
+
+    }
+
+    //set config file
+    fd = open(RADVD_CONF_FILE, O_CREAT | O_TRUNC | O_WRONLY | O_NOFOLLOW, 0660);
+    if (fd < 0) {
+        ALOGE("Cannot update \"%s\": %s", RADVD_CONF_FILE, strerror(errno));
+        free(wbuf);
+        return -1;
+    }
+
+    if(wbuf) {
+        if (write(fd, wbuf, strlen(wbuf)) < 0) {
+            ALOGE("Cannot write to \"%s\": %s", RADVD_CONF_FILE, strerror(errno));
+            ret = -1;
+        }
+        free(wbuf);
+    }
+
+    /* Note: apparently open can fail to set permissions correctly at times */
+    if (fchmod(fd, 0660) < 0) {
+        ALOGE("Error changing permissions of %s to 0660: %s",
+                RADVD_CONF_FILE, strerror(errno));
+        close(fd);
+        unlink(RADVD_CONF_FILE);
+        return -1;
+    }
+
+    close(fd);
+
+    //start radvd
+
+    pid_t pid = 1;
+
+    if ((pid = fork()) < 0) {
+        ALOGE("fork failed (%s)", strerror(errno));
+        return -1;
+    }
+
+    if (!pid) {
+        //gid_t groups [] = { AID_NET_ADMIN, AID_NET_RAW, AID_INET };
+
+        //setgroups(sizeof(groups)/sizeof(groups[0]), groups);
+        //setresgid(AID_SYSTEM, AID_SYSTEM, AID_SYSTEM);
+        //setresuid(AID_SYSTEM, AID_SYSTEM, AID_SYSTEM);
+
+        //if (execl(RADVD_BIN_FILE, RADVD_BIN_FILE,
+        //    "-C", RADVD_CONF_FILE, (char *) NULL)) {
+        //    ALOGE("execl failed (%s)", strerror(errno));
+        //}
+        //ALOGE("Radvd failed to start");
+        //return -1;
+
+        char **args = (char **)malloc(sizeof(char *) * 7);
+        args[6] = NULL;
+        args[0] = (char *)"/system/bin/radvd";
+        args[1] = (char *)"-C";
+        args[2] = (char *)RADVD_CONF_FILE; //"/data/misc/wifi/radvd.conf";
+        args[3] = (char *)"-p";
+        args[4] = (char *)RADVD_PID_FILE;
+        args[5] = (char *)"-n";
+
+
+        if (execv(args[0], args)) {
+            ALOGE("execl radvd failed (%s)", strerror(errno));
+        }
+        ALOGE("Should never get here!");
+        _exit(-1);
+
+    } else {
+        mRadvdPid = pid;
+        mRadvdStarted = true;
+        ALOGD("Radvd started successfully, mRadvdPid:%d", mRadvdPid);
+    }
+
+    //startDhcp6s(dns1, dns2);
+
+    //set IP rule
+    applyIpV6Rule();
+
+    return 0;
+}
+
+int TetherController::stopRadvd(void) {
+
+    ALOGD("stopRadvd");
+
+    if (!mRadvdStarted) {
+        ALOGE("Radvd is not running");
+        return -1;
+    }
+
+    ALOGD("Stopping the Radvd service...");
+
+    FILE *f = fopen(RADVD_PID_FILE, "r");
+    if(f) {
+        int radvd_pid = 0;
+        if(fscanf(f, "%d\n", &radvd_pid) == 1) {
+            ALOGD("Pid from radvd.pid: %d, kill it", radvd_pid);
+            kill(radvd_pid, SIGTERM);
+            waitpid(radvd_pid, NULL, 0);
+            mRadvdPid = 0;
+        }
+        fclose(f);//close
+    }
+
+    //if get pid from RADVD_PID_FILE fail, use orig pid, and kill it
+    if(mRadvdPid) {
+        ALOGD("mRadvdPid: %d, kill it", mRadvdPid);
+        kill(mRadvdPid, SIGTERM);
+        waitpid(mRadvdPid, NULL, 0);
+    }
+
+    //clear ip rule
+    clearIpV6Rule();
+
+    mRadvdStarted = false;
+    mV6Interface[0] = '\0';
+    mRadvdPid = 0;
+    mV6TetheredInterface[0] = '\0';
+    ALOGD("Radvd stopped successfully");
+
+    //stopDhcp6s();
+
+    return 0;
+}
+
+int TetherController::applyIpV6Rule(void){
+
+    //set ip rule
+    const char *cmd3[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "add",
+            mV6networkaddr,
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd3), cmd3);
+
+    const char *cmd4[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "add",
+            "fe80::/64",
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd4), cmd4);
+
+    const char *default_routecmd[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "add",
+            "::/0",
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(default_routecmd), default_routecmd);
+
+    const char *cmd5[] = {
+            IP_PATH,
+            "-6",
+            "rule",
+            "add",
+            "iif",
+            mV6Interface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd5), cmd5);
+
+
+    const char *cmd6[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "flush",
+            "cache"
+    };
+
+    runCmd(ARRAY_SIZE(cmd6), cmd6);
+
+
+    const char *cmd7[] = {
+            IPTABLES_PATH,
+            "-A",
+            "FORWARD",
+            "-p",
+            "udp",
+            "--dport",
+            "3544",
+            "-j",
+            "DROP"
+    };
+
+    runCmd(ARRAY_SIZE(cmd7), cmd7);
+
+    const char *cmd8[] = {
+            IPTABLES_PATH,
+            "-A",
+            "FORWARD",
+            "-p",
+            "udp",
+            "--sport",
+            "3544",
+            "-j",
+            "DROP"
+    };
+
+    runCmd(ARRAY_SIZE(cmd8), cmd8);
+
+
+    //to add rule for oif is mV6TetheredInterface, such as usb0
+    const char *cmd9[] = {
+            IP_PATH,
+            "-6",
+            "rule",
+            "add",
+            "oif",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd9), cmd9);
+
+    return 0;
+}
+int TetherController::clearIpV6Rule(void){
+
+    const char *cmd[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "del",
+            mV6networkaddr,
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd), cmd);
+
+    const char *cmd1[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "del",
+            "fe80::/64",
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd1), cmd1);
+
+    const char *del_routecmd[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "del",
+            "::/0",
+            "dev",
+            mV6TetheredInterface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(del_routecmd), del_routecmd);
+
+    const char *cmd2[] = {
+            IP_PATH,
+            "-6",
+            "rule",
+            "del",
+            "iif",
+            mV6Interface,
+            "table",
+            "75"
+    };
+
+    runCmd(ARRAY_SIZE(cmd2), cmd2);
+
+    const char *flush_cmd[] = {
+            IP_PATH,
+            "-6",
+            "route",
+            "flush",
+            "cache"
+    };
+
+    runCmd(ARRAY_SIZE(flush_cmd), flush_cmd);
+
+    const char *del_udpcmd[] = {
+            IPTABLES_PATH,
+            "-D",
+            "FORWARD",
+            "-p",
+            "udp",
+            "--dport",
+            "3544",
+            "-j",
+            "DROP"
+    };
+
+    runCmd(ARRAY_SIZE(del_udpcmd), del_udpcmd);
+
+    const char *del_udpcmd1[] = {
+            IPTABLES_PATH,
+            "-D",
+            "FORWARD",
+            "-p",
+            "udp",
+            "--sport",
+            "3544",
+            "-j",
+            "DROP"
+    };
+
+    runCmd(ARRAY_SIZE(del_udpcmd1), del_udpcmd1);
+
+    return 0;
+}
+
+int TetherController::addV6RadvdIface(const char *iface) {
+    char iface2[32] = {0};
+
+    ALOGD("addV6RadvdIface:%s", iface?iface:"null");
+    if(!iface)  return -1;
+    if(strlen(iface) >= sizeof(mV6Interface)) {
+        ALOGE("Invalid interface %s , too long\n", iface);
+        return -1;
+    }
+
+    memset(mV6Interface, 0, sizeof(mV6Interface));
+    strcpy(mV6Interface, iface);
+    strncpy(iface2,iface,(sizeof(iface2)-1));
+    return startRadvd(iface2, false);
+}
+
+int TetherController::rmV6RadvdIface(const char *iface) {
+
+    ALOGD("rmV6RadvdIface: %s", iface?iface:"null");
+
+    if(!iface)  return -1;
+
+    stopRadvd();
+
+    memset(mV6networkaddr, 0, sizeof(mV6networkaddr));
+    mV6Interface[0] = '\0';
+
+    return 0;
+}
+//END: ipv6 tethering test
 
 }  // namespace net
 }  // namespace android

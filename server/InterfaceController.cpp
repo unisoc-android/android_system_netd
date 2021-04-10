@@ -32,6 +32,7 @@
 #include <log/log.h>
 #include <logwrap/logwrap.h>
 #include <netutils/ifc.h>
+#include <cutils/properties.h>
 
 #include <android/net/INetd.h>
 #include <netdutils/Misc.h>
@@ -361,11 +362,30 @@ void InterfaceController::setAcceptRARouteTable(int tableOrOffset) {
 
 int InterfaceController::setMtu(const char *interface, const char *mtu)
 {
+    //char ipv6Intface[PROPERTY_VALUE_MAX] = {0};
+    //char ipv6Mtu[PROPERTY_VALUE_MAX] = {0};
+
     if (!isIfaceName(interface)) {
         errno = ENOENT;
         return -errno;
     }
+
+    ALOGD("InterfaceController: setMtu for  %s to mtu %s", interface, mtu);
+    //property_get("net.mtu.ipv6.intface", ipv6Intface, "");
+    //property_get("net.ipv6.mtu", ipv6Mtu, "");
+    //ALOGD("InterfaceController: setMtu for ipv6  %s to mtu %s", ipv6Intface, ipv6Mtu);
+    //writeValueToPath(ipv6_proc_path, ipv6Intface, "mtu", ipv6Mtu);
     return writeValueToPath(sys_net_path, interface, "mtu", mtu);
+}
+
+int InterfaceController::setIpv6Mtu(const char *interface, const char *ipv6Mtu)
+{
+    if (!isIfaceName(interface)) {
+        errno = ENOENT;
+        return -1;
+    }
+    ALOGD("setIpv6Mtu for %s to %s", interface, ipv6Mtu);
+    return writeValueToPath(ipv6_proc_path, interface, "mtu", ipv6Mtu);
 }
 
 int InterfaceController::addAddress(const char *interface,

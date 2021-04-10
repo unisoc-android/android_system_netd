@@ -32,6 +32,7 @@
 #include "TrafficController.h"
 #include "WakeupController.h"
 #include "XfrmController.h"
+#include "ExtDataController.h"
 #include "netdutils/Log.h"
 
 namespace android {
@@ -55,6 +56,7 @@ class Controllers {
     XfrmController xfrmCtrl;
     TrafficController trafficCtrl;
     TcpSocketMonitor tcpSocketMonitor;
+    ExtDataController extdataCtl;
 
     void init();
 
